@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { BinderNode, NodeType } from '../types'
+import type { BinderNode, Label, NodeType } from '../types'
+import { NODE_DEFAULT_TITLES, NODE_ICONS } from '../types'
 import { addNode, deleteNodesForever, updateNodes } from '../data'
 import {
   childrenOf,
@@ -17,12 +18,13 @@ interface Props {
   pid: string
   nodes: BinderNode[]
   selectedId: string | null
+  labels: Label[]
   onSelect: (id: string) => void
 }
 
 type DropPos = 'before' | 'inside' | 'after'
 
-export default function Binder({ uid, pid, nodes, selectedId, onSelect }: Props) {
+export default function Binder({ uid, pid, nodes, selectedId, labels, onSelect }: Props) {
   const storageKey = `binder-collapsed-${pid}`
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     try {
@@ -34,6 +36,7 @@ export default function Binder({ uid, pid, nodes, selectedId, onSelect }: Props)
   const [menuId, setMenuId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [showTrash, setShowTrash] = useState(false)
+  const [showNew, setShowNew] = useState(false)
   const [drag, setDrag] = useState<{ id: string; over?: string; pos?: DropPos } | null>(null)
 
   useEffect(() => {
@@ -55,7 +58,7 @@ export default function Binder({ uid, pid, nodes, selectedId, onSelect }: Props)
   const apply = (u: ReturnType<typeof moveUpDown>) => updateNodes(uid, pid, u)
 
   const create = (type: NodeType, parentId: string | null, order?: number) => {
-    const title = type === 'folder' ? 'Neuer Ordner' : 'Neue Szene'
+    const title = NODE_DEFAULT_TITLES[type]
     const id = addNode(uid, pid, type, title, parentId, order ?? nextOrder(nodes, parentId))
     if (parentId)
       setCollapsed((s) => {
@@ -70,6 +73,13 @@ export default function Binder({ uid, pid, nodes, selectedId, onSelect }: Props)
   /** Neuer Eintrag relativ zur Auswahl: in Ordner hinein, sonst direkt dahinter */
   const createNearSelection = (type: NodeType) => {
     const sel = nodes.find((n) => n.id === selectedId && !n.trashed)
+    // Figuren und Orte landen automatisch im passenden Ordner (falls vorhanden)
+    if ((type === 'character' || type === 'place') && sel?.type !== 'folder') {
+      const target = childrenOf(nodes, null).find(
+        (n) => n.type === 'folder' && n.title === (type === 'character' ? 'Figuren' : 'Orte'),
+      )
+      if (target) return create(type, target.id)
+    }
     if (!sel) return create(type, null)
     if (sel.type === 'folder') return create(type, sel.id)
     const sibs = childrenOf(nodes, sel.parentId)
@@ -158,7 +168,7 @@ export default function Binder({ uid, pid, nodes, selectedId, onSelect }: Props)
           ) : (
             <span className="twisty" />
           )}
-          <span className="icon">{n.type === 'folder' ? '📁' : '📄'}</span>
+          <span className="icon">{NODE_ICONS[n.type]}</span>
           {editingId === n.id ? (
             <input
               className="rename"
@@ -181,8 +191,15 @@ export default function Binder({ uid, pid, nodes, selectedId, onSelect }: Props)
               {n.title || 'Ohne Titel'}
             </span>
           )}
+          {n.label && (
+            <span
+              className="label-dot"
+              style={{ background: labels.find((l) => l.id === n.label)?.color ?? 'transparent' }}
+            />
+          )}
           <button
             className="more"
+            data-menu-toggle
             aria-label="Aktionen"
             onClick={(e) => {
               e.stopPropagation()
@@ -201,6 +218,8 @@ export default function Binder({ uid, pid, nodes, selectedId, onSelect }: Props)
                 ? ([
                     ['Neue Szene hier drin', () => create('text', n.id)],
                     ['Neuer Ordner hier drin', () => create('folder', n.id)],
+                    ['Neue Figur hier drin', () => create('character', n.id)],
+                    ['Neuer Ort hier drin', () => create('place', n.id)],
                   ] as [string, () => void][])
                 : []),
               ['Nach oben', () => apply(moveUpDown(nodes, n.id, -1))],
@@ -235,7 +254,9 @@ export default function Binder({ uid, pid, nodes, selectedId, onSelect }: Props)
 
       <div className="binder-actions">
         <button onClick={() => createNearSelection('text')}>＋ Szene</button>
-        <button onClick={() => createNearSelection('folder')}>＋ Ordner</button>
+        <button data-menu-toggle className={showNew ? 'active' : ''} onClick={() => setShowNew(!showNew)}>
+          ＋ Neu …
+        </button>
         <button
           className={showTrash ? 'active' : ''}
           onClick={() => setShowTrash(!showTrash)}
@@ -244,6 +265,20 @@ export default function Binder({ uid, pid, nodes, selectedId, onSelect }: Props)
           🗑 {trashed.length || ''}
         </button>
       </div>
+
+      {showNew && (
+        <NodeMenu
+          onClose={() => setShowNew(false)}
+          items={(['text', 'folder', 'character', 'place'] as NodeType[]).map(
+            (t) =>
+              [
+                `${NODE_ICONS[t]} ${{ text: 'Szene', folder: 'Ordner', character: 'Figur', place: 'Ort' }[t]}`,
+                () => createNearSelection(t),
+              ] as [string, () => void],
+          )}
+          plain
+        />
+      )}
 
       {showTrash && (
         <div className="trash">
@@ -260,7 +295,7 @@ export default function Binder({ uid, pid, nodes, selectedId, onSelect }: Props)
             {trashed.map((t) => (
               <li key={t.id}>
                 <span>
-                  {t.type === 'folder' ? '📁' : '📄'} {t.title}
+                  {NODE_ICONS[t.type]} {t.title}
                 </span>
                 <button className="link" onClick={() => apply(restore(nodes, t.id))}>
                   Wiederherstellen
@@ -274,11 +309,20 @@ export default function Binder({ uid, pid, nodes, selectedId, onSelect }: Props)
   )
 }
 
-function NodeMenu({ items, onClose }: { items: [string, () => void][]; onClose: () => void }) {
+function NodeMenu({
+  items,
+  onClose,
+  plain,
+}: {
+  items: [string, () => void][]
+  onClose: () => void
+  plain?: boolean
+}) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const h = (e: PointerEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+      const t = e.target as HTMLElement
+      if (ref.current && !ref.current.contains(t) && !t.closest?.('[data-menu-toggle]')) onClose()
     }
     // verzögert registrieren, damit der öffnende Klick nicht sofort schließt
     const t = setTimeout(() => document.addEventListener('pointerdown', h), 0)
@@ -288,7 +332,7 @@ function NodeMenu({ items, onClose }: { items: [string, () => void][]; onClose: 
     }
   }, [onClose])
   return (
-    <div className="menu" ref={ref}>
+    <div className={`menu${plain ? ' plain' : ''}`} ref={ref}>
       {items.map(([label, fn]) => (
         <button
           key={label}

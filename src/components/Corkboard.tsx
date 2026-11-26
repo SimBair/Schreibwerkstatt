@@ -1,4 +1,5 @@
-import type { BinderNode } from '../types'
+import type { BinderNode, Label } from '../types'
+import { NODE_ICONS } from '../types'
 import { childrenOf, wordsUnder } from '../tree'
 import { updateNodes } from '../data'
 
@@ -7,28 +8,24 @@ interface Props {
   pid: string
   folder: BinderNode
   nodes: BinderNode[]
+  labels: Label[]
   onOpen: (id: string) => void
 }
 
 /** Pinnwand: Karteikarten mit Titel und Synopsis der Einträge eines Ordners */
-export default function Corkboard({ uid, pid, folder, nodes, onOpen }: Props) {
+export default function Corkboard({ uid, pid, folder, nodes, labels, onOpen }: Props) {
   const kids = childrenOf(nodes, folder.id)
+  if (kids.length === 0)
+    return <p className="muted">Dieser Ordner ist leer. Lege links über „＋ Neu“ etwas an.</p>
   return (
-    <div className="corkboard-wrap">
-      <div className="corkboard-head">
-        <h2>{folder.title}</h2>
-        <span className="muted">
-          {kids.length} Einträge · {wordsUnder(nodes, folder.id).toLocaleString('de-DE')} Wörter
-        </span>
-      </div>
-      {kids.length === 0 && (
-        <p className="muted">Dieser Ordner ist leer. Lege links über „＋ Szene“ etwas an.</p>
-      )}
-      <div className="corkboard">
-        {kids.map((k) => (
-          <div key={k.id} className="card">
+    <div className="corkboard">
+      {kids.map((k) => {
+        const label = labels.find((l) => l.id === k.label)
+        const pov = k.pov ? nodes.find((n) => n.id === k.pov) : null
+        return (
+          <div key={k.id} className="card" style={{ borderTopColor: label?.color ?? 'transparent' }}>
             <div className="card-title" onClick={() => onOpen(k.id)}>
-              {k.type === 'folder' ? '📁 ' : ''}
+              {k.type !== 'text' ? NODE_ICONS[k.type] + ' ' : ''}
               {k.title}
             </div>
             <textarea
@@ -41,11 +38,17 @@ export default function Corkboard({ uid, pid, folder, nodes, onOpen }: Props) {
               }}
             />
             <div className="card-foot muted">
-              {(k.type === 'folder' ? wordsUnder(nodes, k.id) : k.wordCount).toLocaleString('de-DE')} Wörter
+              <span>
+                {k.type === 'folder' || k.type === 'text'
+                  ? `${(k.type === 'folder' ? wordsUnder(nodes, k.id) : k.wordCount).toLocaleString('de-DE')} Wörter`
+                  : ''}
+                {pov ? ` · 👤 ${pov.title}` : ''}
+              </span>
+              {k.status && <span className="stamp">{k.status}</span>}
             </div>
           </div>
-        ))}
-      </div>
+        )
+      })}
     </div>
   )
 }

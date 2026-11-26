@@ -4,26 +4,33 @@ import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import CharacterCount from '@tiptap/extension-character-count'
 import Typography from '@tiptap/extension-typography'
-import type { BinderNode } from '../types'
+import type { BinderNode, Label } from '../types'
 import { loadContent, saveContent, updateNodes } from '../data'
+import MetaFields from './MetaFields'
+import SnapshotPanel from './SnapshotPanel'
 
 interface Props {
   uid: string
   pid: string
   node: BinderNode
+  labels: Label[]
+  characters: BinderNode[]
   focusMode: boolean
   onToggleFocus: () => void
 }
 
 const SAVE_DELAY = 800
 
-export default function Editor({ uid, pid, node, focusMode, onToggleFocus }: Props) {
+export default function Editor({ uid, pid, node, labels, characters, focusMode, onToggleFocus }: Props) {
   const [loading, setLoading] = useState(true)
-  const [showSynopsis, setShowSynopsis] = useState(false)
+  const [showDetails, setShowDetails] = useState(() => localStorage.getItem('show-details') === '1')
+  const [showSnaps, setShowSnaps] = useState(false)
   const currentId = useRef<string | null>(null)
   const saveTimer = useRef<number | undefined>(undefined)
   const dirty = useRef(false)
   const startWords = useRef(0)
+  /** Wortzahl beim letzten Speichern – für die Tagesstatistik */
+  const savedWords = useRef(0)
 
   const editor = useEditor({
     extensions: [
@@ -56,7 +63,30 @@ export default function Editor({ uid, pid, node, focusMode, onToggleFocus }: Pro
     const { editor: ed, uid: u, pid: p } = ctx.current
     if (!ed || !dirty.current || !currentId.current) return
     dirty.current = false
-    saveContent(u, p, currentId.current, ed.getHTML(), ed.storage.characterCount.words())
+    const words = ed.storage.characterCount.words()
+    saveContent(u, p, currentId.current, ed.getHTML(), words, words - savedWords.current)
+    savedWords.current = words
+  }
+
+  const restoreSnapshot = (html: string) => {
+    if (!editor || !currentId.current) return
+    window.clearTimeout(saveTimer.current)
+    dirty.current = false
+    editor.commands.setContent(html, { emitUpdate: false })
+    const words = editor.storage.characterCount.words()
+    // Wiederherstellen zählt nicht als Schreiben → keine Statistik-Änderung
+    saveContent(uid, pid, currentId.current, html, words, 0)
+    savedWords.current = words
+    startWords.current = words
+  }
+
+  const toggleDetails = () => {
+    setShowDetails(!showDetails)
+    try {
+      localStorage.setItem('show-details', showDetails ? '0' : '1')
+    } catch {
+      /* egal */
+    }
   }
 
   // Inhalt laden, wenn sich der ausgewählte Text ändert
@@ -68,6 +98,7 @@ export default function Editor({ uid, pid, node, focusMode, onToggleFocus }: Pro
     setLoading(true)
     editor.setEditable(false)
     loadContent(uid, pid, node.id)
+      .then((c) => c.html)
       .catch((e) => {
         console.error(e)
         return ''
@@ -77,6 +108,7 @@ export default function Editor({ uid, pid, node, focusMode, onToggleFocus }: Pro
         editor.commands.setContent(html || '', { emitUpdate: false })
         currentId.current = node.id
         startWords.current = editor.storage.characterCount.words()
+        savedWords.current = startWords.current
         editor.setEditable(true)
         setLoading(false)
         // Nicht fokussieren, wenn gerade ein Eingabefeld (z. B. Umbenennen) aktiv ist
@@ -108,62 +140,86 @@ export default function Editor({ uid, pid, node, focusMode, onToggleFocus }: Pro
   })
 
   return (
-    <div className={`editor-wrap${focusMode ? ' focus' : ''}`}>
-      <div className="editor-head">
-        <input
-          className="doc-title"
-          key={node.id}
-          defaultValue={node.title}
-          placeholder="Titel"
-          onBlur={(e) => {
-            const t = e.target.value.trim()
-            if (t && t !== node.title) updateNodes(uid, pid, [{ id: node.id, data: { title: t } }])
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              editor?.commands.focus('start')
-            }
-          }}
-        />
-        <button
-          className={`ghost small${showSynopsis || node.synopsis ? ' active' : ''}`}
-          onClick={() => setShowSynopsis(!showSynopsis)}
-          title="Inhaltsangabe (erscheint auf der Pinnwand)"
-        >
-          Synopsis
-        </button>
+    <div className="editor-row">
+      <div className="editor-wrap">
+        <div className="editor-head">
+          <input
+            className="doc-title"
+            key={node.id + node.title}
+            defaultValue={node.title}
+            placeholder="Titel"
+            onBlur={(e) => {
+              const t = e.target.value.trim()
+              if (t && t !== node.title) updateNodes(uid, pid, [{ id: node.id, data: { title: t } }])
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                editor?.commands.focus('start')
+              }
+            }}
+          />
+          <button
+            className={`ghost small${showDetails ? ' active' : ''}`}
+            onClick={toggleDetails}
+            title="Synopsis, Status, Label und POV"
+          >
+            Details
+          </button>
+          <button
+            className={`ghost small${showSnaps ? ' active' : ''}`}
+            onClick={() => setShowSnaps(!showSnaps)}
+            title="Schnappschüsse"
+          >
+            📸
+          </button>
+        </div>
+        {showDetails && (
+          <div className="details">
+            <textarea
+              key={'syn-' + node.id}
+              className="synopsis"
+              placeholder="Synopsis: kurze Inhaltsangabe dieser Szene (erscheint auf der Pinnwand) …"
+              defaultValue={node.synopsis}
+              onBlur={(e) => {
+                if (e.target.value !== node.synopsis)
+                  updateNodes(uid, pid, [{ id: node.id, data: { synopsis: e.target.value } }])
+              }}
+            />
+            <div className="meta-row">
+              <MetaFields uid={uid} pid={pid} node={node} labels={labels} characters={characters} />
+            </div>
+          </div>
+        )}
+
+        {editor && <Toolbar editor={editor} focusMode={focusMode} onToggleFocus={onToggleFocus} />}
+
+        <div className="editor-scroll" onClick={() => editor?.commands.focus()}>
+          {loading && <div className="muted center">Lade …</div>}
+          <EditorContent editor={editor} className="editor-content" />
+        </div>
+
+        <div className="editor-foot">
+          <span>{words.toLocaleString('de-DE')} Wörter</span>
+          {!loading && words - startWords.current !== 0 && (
+            <span className="muted">
+              {' '}
+              · diese Sitzung {words - startWords.current > 0 ? '+' : ''}
+              {(words - startWords.current).toLocaleString('de-DE')}
+            </span>
+          )}
+        </div>
       </div>
-      {showSynopsis && (
-        <textarea
-          key={'syn-' + node.id}
-          className="synopsis"
-          placeholder="Kurze Inhaltsangabe dieser Szene …"
-          defaultValue={node.synopsis}
-          onBlur={(e) => {
-            if (e.target.value !== node.synopsis)
-              updateNodes(uid, pid, [{ id: node.id, data: { synopsis: e.target.value } }])
-          }}
+      {showSnaps && editor && !focusMode && (
+        <SnapshotPanel
+          uid={uid}
+          pid={pid}
+          node={node}
+          editor={editor}
+          onRestore={restoreSnapshot}
+          onClose={() => setShowSnaps(false)}
         />
       )}
-
-      {editor && <Toolbar editor={editor} focusMode={focusMode} onToggleFocus={onToggleFocus} />}
-
-      <div className="editor-scroll" onClick={() => editor?.commands.focus()}>
-        {loading && <div className="muted center">Lade …</div>}
-        <EditorContent editor={editor} className="editor-content" />
-      </div>
-
-      <div className="editor-foot">
-        <span>{words.toLocaleString('de-DE')} Wörter</span>
-        {!loading && words - startWords.current !== 0 && (
-          <span className="muted">
-            {' '}
-            · diese Sitzung {words - startWords.current > 0 ? '+' : ''}
-            {(words - startWords.current).toLocaleString('de-DE')}
-          </span>
-        )}
-      </div>
     </div>
   )
 }

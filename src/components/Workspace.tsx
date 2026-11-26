@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { BinderNode, Project } from '../types'
-import { updateProject, watchNodes } from '../data'
+import type { BinderNode, DayStat, Project } from '../types'
+import { DEFAULT_LABELS, today } from '../types'
+import { watchDays, watchNodes } from '../data'
 import Binder from './Binder'
 import Editor from './Editor'
-import Corkboard from './Corkboard'
+import FolderView from './FolderView'
+import SheetEditor from './SheetEditor'
+import StatsDialog from './StatsDialog'
 import SyncBadge from './SyncBadge'
 import { flattenTexts, wordsUnder } from '../tree'
 
@@ -17,12 +20,15 @@ const isNarrow = () => window.matchMedia('(max-width: 800px)').matches
 
 export default function Workspace({ uid, project, onBack }: Props) {
   const [nodes, setNodes] = useState<BinderNode[] | null>(null)
+  const [days, setDays] = useState<DayStat[]>([])
   const selKey = `selected-${project.id}`
   const [selectedId, setSelectedId] = useState<string | null>(() => localStorage.getItem(selKey))
   const [sidebar, setSidebar] = useState(() => !isNarrow())
   const [focusMode, setFocusMode] = useState(false)
+  const [showStats, setShowStats] = useState(false)
 
   useEffect(() => watchNodes(uid, project.id, setNodes), [uid, project.id])
+  useEffect(() => watchDays(uid, project.id, setDays), [uid, project.id])
 
   const select = (id: string) => {
     setSelectedId(id)
@@ -44,6 +50,14 @@ export default function Workspace({ uid, project, onBack }: Props) {
     }
   }, [nodes, selected])
 
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && focusMode) setFocusMode(false)
+    }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [focusMode])
+
   // Gezählt wird der Ordner „Manuskript“ (wie der Entwurfsordner in Scrivener), sonst alles
   const manuscriptWords = useMemo(() => {
     if (!nodes) return 0
@@ -52,22 +66,18 @@ export default function Workspace({ uid, project, onBack }: Props) {
     return nodes.filter((n) => !n.trashed).reduce((s, n) => s + (n.wordCount || 0), 0)
   }, [nodes])
 
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && focusMode) setFocusMode(false)
-    }
-    window.addEventListener('keydown', h)
-    return () => window.removeEventListener('keydown', h)
-  }, [focusMode])
-  const goal = project.wordGoal || 0
-  const pct = goal ? Math.min(100, Math.round((manuscriptWords / goal) * 100)) : 0
+  const characters = useMemo(
+    () =>
+      (nodes ?? [])
+        .filter((n) => n.type === 'character' && !n.trashed)
+        .sort((a, b) => a.title.localeCompare(b.title, 'de')),
+    [nodes],
+  )
+  const labels = project.labels ?? DEFAULT_LABELS
 
-  const editGoal = () => {
-    const v = prompt('Wortziel für dieses Projekt:', String(goal))
-    if (v === null) return
-    const n = parseInt(v.replace(/\D/g, ''), 10)
-    if (!isNaN(n)) updateProject(uid, project.id, { wordGoal: n })
-  }
+  const dailyGoal = project.dailyGoal ?? 500
+  const todayWords = Math.max(0, days.find((d) => d.id === today())?.words ?? 0)
+  const pct = dailyGoal ? Math.min(100, Math.round((todayWords / dailyGoal) * 100)) : 0
 
   const showSidebar = sidebar && !focusMode
 
@@ -83,12 +93,13 @@ export default function Workspace({ uid, project, onBack }: Props) {
           </button>
           <strong className="project-title">{project.title}</strong>
           <span className="grow" />
-          <button className="goal" onClick={editGoal} title="Wortziel ändern">
-            <span className="goal-bar">
+          <button className="goal" onClick={() => setShowStats(true)} title="Schreibstatistik">
+            <span className={`goal-bar${pct >= 100 ? ' done' : ''}`}>
               <span style={{ width: pct + '%' }} />
             </span>
-            {manuscriptWords.toLocaleString('de-DE')}
-            {goal ? ` / ${goal.toLocaleString('de-DE')}` : ''} Wörter
+            Heute {todayWords.toLocaleString('de-DE')}
+            <span className="goal-of"> / {dailyGoal.toLocaleString('de-DE')}</span>
+            {pct >= 100 ? ' ✓' : ''}
           </button>
           <SyncBadge />
         </header>
@@ -98,7 +109,14 @@ export default function Workspace({ uid, project, onBack }: Props) {
           <>
             <aside className="sidebar">
               {nodes ? (
-                <Binder uid={uid} pid={project.id} nodes={nodes} selectedId={selectedId} onSelect={select} />
+                <Binder
+                  uid={uid}
+                  pid={project.id}
+                  nodes={nodes}
+                  labels={labels}
+                  selectedId={selectedId}
+                  onSelect={select}
+                />
               ) : (
                 <p className="muted center">Lade …</p>
               )}
@@ -112,16 +130,38 @@ export default function Workspace({ uid, project, onBack }: Props) {
               uid={uid}
               pid={project.id}
               node={selected}
+              labels={labels}
+              characters={characters}
               focusMode={focusMode}
               onToggleFocus={() => setFocusMode(!focusMode)}
             />
           )}
           {selected?.type === 'folder' && nodes && (
-            <Corkboard uid={uid} pid={project.id} folder={selected} nodes={nodes} onOpen={select} />
+            <FolderView
+              uid={uid}
+              pid={project.id}
+              folder={selected}
+              nodes={nodes}
+              labels={labels}
+              characters={characters}
+              onOpen={select}
+            />
+          )}
+          {(selected?.type === 'character' || selected?.type === 'place') && nodes && (
+            <SheetEditor uid={uid} pid={project.id} node={selected} nodes={nodes} onOpen={select} />
           )}
           {!selected && nodes && <p className="muted center">Wähle links eine Szene aus oder lege eine neue an.</p>}
         </section>
       </div>
+      {showStats && (
+        <StatsDialog
+          uid={uid}
+          project={project}
+          days={days}
+          manuscriptWords={manuscriptWords}
+          onClose={() => setShowStats(false)}
+        />
+      )}
     </div>
   )
 }
